@@ -44,15 +44,15 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS settings
                  (key TEXT PRIMARY KEY, value TEXT)''')
     
-    # Cek kolom grand_total, jika tidak ada (database lama), tambahkan
+    # Tambahkan kolom yang mungkin belum ada (untuk database lama)
     c.execute("PRAGMA table_info(transactions)")
     columns = [row[1] for row in c.fetchall()]
     if "grand_total" not in columns:
         c.execute("ALTER TABLE transactions ADD COLUMN grand_total INTEGER")
     if "tax" not in columns:
-        c.execute("ALTER TABLE transactions ADD COLUMN tax REAL")
+        c.execute("ALTER TABLE transactions ADD COLUMN tax REAL DEFAULT 0")
     
-    # Insert default menu jika kosong
+    # Insert default jika kosong
     c.execute("SELECT COUNT(*) FROM menu")
     if c.fetchone()[0] == 0:
         default_menu = [
@@ -65,11 +65,14 @@ def init_db():
         ]
         c.executemany("INSERT INTO menu (nama, harga) VALUES (?, ?)", default_menu)
     
-    # PIN default
-    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pin_hash', ?)",
-              (hashlib.sha256("000000".encode()).hexdigest(),))
-    # Tax default
-    c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('tax_rate', '10')")
+    # Pengaturan default
+    defaults = {
+        "pin_hash": hashlib.sha256("000000".encode()).hexdigest(),
+        "tax_rate": "10",
+        "currency_symbol": "Rp"
+    }
+    for key, val in defaults.items():
+        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
     
     conn.commit()
     conn.close()
@@ -96,6 +99,14 @@ def verify_pin(pin):
 def change_pin(new_pin):
     new_hash = hashlib.sha256(new_pin.encode()).hexdigest()
     update_setting("pin_hash", new_hash)
+
+def get_currency():
+    sym = get_setting("currency_symbol")
+    return sym if sym else "Rp"
+
+def format_currency(amount):
+    sym = get_currency()
+    return f"{sym} {amount:,.0f}" if sym else f"Rp {amount:,.0f}"
 
 def get_menu():
     conn = sqlite3.connect(DB_PATH)
@@ -129,24 +140,44 @@ def delete_menu_item(id):
 def insert_transaction(timestamp, total, tax, grand_total, metode, status, items, keterangan=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
-                 VALUES (?,?,?,?,?,?,?)''',
-              (timestamp, total, tax, grand_total, metode, status, keterangan))
-    trans_id = c.lastrowid
-    for item in items:
-        c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
-                  (trans_id, item["nama"], item["harga"], item["qty"]))
-    conn.commit()
-    conn.close()
-    return trans_id
+    # Pastikan kolom grand_total ada (double-check)
+    try:
+        c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
+                     VALUES (?,?,?,?,?,?,?)''',
+                  (timestamp, total, tax, grand_total, metode, status, keterangan))
+        trans_id = c.lastrowid
+        for item in items:
+            c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
+                      (trans_id, item["nama"], item["harga"], item["qty"]))
+        conn.commit()
+        conn.close()
+        return trans_id
+    except sqlite3.OperationalError as e:
+        # Coba tambahkan kolom jika belum ada
+        c.execute("PRAGMA table_info(transactions)")
+        cols = [row[1] for row in c.fetchall()]
+        if "grand_total" not in cols:
+            c.execute("ALTER TABLE transactions ADD COLUMN grand_total INTEGER")
+        if "tax" not in cols:
+            c.execute("ALTER TABLE transactions ADD COLUMN tax REAL DEFAULT 0")
+        conn.commit()
+        # Ulangi INSERT
+        c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
+                     VALUES (?,?,?,?,?,?,?)''',
+                  (timestamp, total, tax, grand_total, metode, status, keterangan))
+        trans_id = c.lastrowid
+        for item in items:
+            c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
+                      (trans_id, item["nama"], item["harga"], item["qty"]))
+        conn.commit()
+        conn.close()
+        return trans_id
 
 def get_all_transactions():
     conn = sqlite3.connect(DB_PATH)
-    # Cek apakah kolom grand_total ada, jika tidak, hitung dari total (asumsi total = grand_total)
     try:
         df = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
     except:
-        # Fallback jika kolom tidak ada
         df = pd.read_sql_query("SELECT id, timestamp, total, metode, status, keterangan FROM transactions ORDER BY id DESC", conn)
         df["grand_total"] = df["total"]
     conn.close()
@@ -158,7 +189,7 @@ def get_transaction_items(trans_id):
     conn.close()
     return df
 
-# Inisialisasi database (dengan migrasi)
+# Inisialisasi
 init_db()
 
 # ------------------------------
@@ -171,6 +202,8 @@ if "cart" not in st.session_state:
 if "tax_rate" not in st.session_state:
     tax_str = get_setting("tax_rate")
     st.session_state.tax_rate = float(tax_str) if tax_str else 10.0
+if "currency_symbol" not in st.session_state:
+    st.session_state.currency_symbol = get_currency()
 if "show_struk" not in st.session_state:
     st.session_state.show_struk = False
 if "last_transaction" not in st.session_state:
@@ -200,22 +233,41 @@ st.title("🧾 Kasir & Dashboard")
 
 # Sidebar
 with st.sidebar:
-    st.write(f"✅ Login berhasil")
+    st.write("✅ Login berhasil")
     if st.button("🚪 Logout"):
         st.session_state.logged_in = False
         st.session_state.cart = []
         st.rerun()
     st.markdown("---")
     st.subheader("⚙️ Pengaturan")
-    tax_input = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
-                                value=st.session_state.tax_rate)
+    # Tax rate
+    new_tax = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
+                              value=st.session_state.tax_rate)
     if st.button("Simpan Tax Default"):
-        st.session_state.tax_rate = tax_input
-        update_setting("tax_rate", str(tax_input))
+        st.session_state.tax_rate = new_tax
+        update_setting("tax_rate", str(new_tax))
         st.success("Tax rate disimpan!")
+    # Mata uang
+    new_currency = st.text_input("Simbol Mata Uang", value=st.session_state.currency_symbol)
+    if st.button("Simpan Mata Uang"):
+        st.session_state.currency_symbol = new_currency
+        update_setting("currency_symbol", new_currency)
+        st.success("Mata uang diperbarui!")
+    # Ganti PIN
+    with st.expander("🔑 Ganti PIN"):
+        old_pin = st.text_input("PIN Lama", type="password", key="old_pin")
+        new_pin = st.text_input("PIN Baru", type="password", key="new_pin")
+        if st.button("Simpan PIN Baru"):
+            if verify_pin(old_pin):
+                change_pin(new_pin)
+                st.success("PIN berhasil diubah!")
+            else:
+                st.error("PIN lama salah!")
 
+# Ambil data menu
 menu_df = get_menu()
 PRODUK = menu_df.to_dict('records')
+CURR = st.session_state.currency_symbol
 
 tab1, tab2, tab3 = st.tabs(["🛒 Kasir", "📊 Dashboard", "📋 Kelola Menu"])
 
@@ -236,13 +288,13 @@ with tab1:
         """
         for item in items:
             subtotal = item['harga'] * item['qty']
-            struk_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>Rp{subtotal:,}</td></tr>"
+            struk_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>{CURR}{subtotal:,}</td></tr>"
         struk_html += f"""
             </table>
             <hr>
-            <p>Subtotal: <b>Rp{trans['total']:,}</b></p>
-            <p>Tax ({trans['tax_rate']:.1f}%): <b>Rp{int(trans['tax']):,}</b></p>
-            <h3>Total: <b>Rp{trans['grand_total']:,}</b></h3>
+            <p>Subtotal: <b>{CURR}{trans['total']:,}</b></p>
+            <p>Tax ({trans['tax_rate']:.1f}%): <b>{CURR}{int(trans['tax']):,}</b></p>
+            <h3>Total: <b>{CURR}{trans['grand_total']:,}</b></h3>
             <p>Metode: <b>{trans['metode']}</b></p>
             <p>Status: <b>{trans['status']}</b></p>
         </div>
@@ -258,13 +310,12 @@ with tab1:
                 st.session_state.last_transaction = None
                 st.rerun()
     else:
-        # Pilih produk
         st.subheader("Menu")
         items_input = {}
         cols = st.columns(3)
         for i, p in enumerate(PRODUK):
             with cols[i % 3]:
-                qty = st.number_input(f"{p['nama']} (Rp{p['harga']:,})", 0, 20, 0, key=f"qty_{p['id']}")
+                qty = st.number_input(f"{p['nama']} ({CURR}{p['harga']:,})", 0, 20, 0, key=f"qty_{p['id']}")
                 items_input[p['id']] = {"nama": p['nama'], "harga": p['harga'], "qty": qty}
         if st.button("➕ Tambahkan ke Keranjang"):
             st.session_state.cart = []
@@ -278,15 +329,15 @@ with tab1:
             st.subheader("🛒 Keranjang")
             total = sum(item["harga"] * item["qty"] for item in st.session_state.cart)
             for item in st.session_state.cart:
-                st.write(f"- {item['nama']} x{item['qty']} = Rp{item['harga']*item['qty']:,}")
-            st.markdown(f"### Subtotal: **Rp{total:,}**")
+                st.write(f"- {item['nama']} x{item['qty']} = {CURR}{item['harga']*item['qty']:,}")
+            st.markdown(f"### Subtotal: **{CURR}{total:,}**")
             
             tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
                                        value=st.session_state.tax_rate, key="tax_input")
             tax_amount = total * tax_rate / 100
             grand_total = total + tax_amount
-            st.write(f"Tax: Rp{int(tax_amount):,}")
-            st.markdown(f"## Total Bayar: **Rp{int(grand_total):,}**")
+            st.write(f"Tax: {CURR}{int(tax_amount):,}")
+            st.markdown(f"## Total Bayar: **{CURR}{int(grand_total):,}**")
             
             metode = st.radio("Metode Pembayaran", ["QRIS", "DuitNow QR", "GoPay", "Kartu Kredit", "Cash"])
             
@@ -321,12 +372,11 @@ with tab2:
     if df_trans.empty:
         st.info("Belum ada transaksi.")
     else:
-        # Gunakan kolom grand_total jika ada, jika tidak hitung dari total (untuk data lama)
         if "grand_total" in df_trans.columns:
             total_omset = df_trans["grand_total"].sum()
         else:
             total_omset = df_trans["total"].sum()
-        st.metric("💰 Total Omset", f"Rp{total_omset:,.0f}")
+        st.metric("💰 Total Omset", f"{CURR}{total_omset:,.0f}")
         
         st.subheader("🏆 Produk Terlaris")
         all_items = []
@@ -347,8 +397,8 @@ with tab2:
         st.plotly_chart(fig_pie, use_container_width=True)
         
         with st.expander("📋 Riwayat Transaksi"):
-            cols_to_show = [c for c in ["id", "timestamp", "total", "tax", "grand_total", "metode", "status"] if c in df_trans.columns]
-            st.dataframe(df_trans[cols_to_show], use_container_width=True)
+            cols_show = [c for c in ["id","timestamp","total","tax","grand_total","metode","status"] if c in df_trans.columns]
+            st.dataframe(df_trans[cols_show], use_container_width=True)
             tid_pilih = st.selectbox("Detail item transaksi ID:", df_trans["id"].tolist())
             if tid_pilih:
                 detail = get_transaction_items(tid_pilih)
@@ -360,7 +410,7 @@ with tab3:
     with st.form("add_menu"):
         st.subheader("Tambah Menu Baru")
         nama_baru = st.text_input("Nama")
-        harga_baru = st.number_input("Harga", min_value=100, step=100)
+        harga_baru = st.number_input(f"Harga ({CURR})", min_value=100, step=100)
         if st.form_submit_button("➕ Tambahkan"):
             if nama_baru:
                 if add_menu_item(nama_baru, harga_baru):
@@ -377,7 +427,7 @@ with tab3:
         for idx, row in menu.iterrows():
             col1, col2, col3, col4 = st.columns([3,2,1,1])
             col1.write(row["nama"])
-            col2.write(f"Rp{row['harga']:,}")
+            col2.write(f"{CURR}{row['harga']:,}")
             if col3.button("✏️", key=f"edit_{row['id']}"):
                 st.session_state.edit_menu_id = row['id']
             if col4.button("🗑️", key=f"del_{row['id']}"):
@@ -390,7 +440,7 @@ with tab3:
             with st.form("edit_menu_form"):
                 st.subheader(f"Edit: {row['nama']}")
                 nama_edit = st.text_input("Nama Baru", value=row['nama'])
-                harga_edit = st.number_input("Harga Baru", value=row['harga'], step=100)
+                harga_edit = st.number_input(f"Harga Baru ({CURR})", value=row['harga'], step=100)
                 if st.form_submit_button("💾 Simpan Perubahan"):
                     update_menu_item(edit_id, nama_edit, harga_edit)
                     st.session_state.edit_menu_id = None
