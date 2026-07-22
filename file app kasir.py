@@ -4,7 +4,6 @@ import plotly.express as px
 from datetime import datetime
 import sqlite3
 import hashlib
-import io
 
 # ------------------------------
 # Database
@@ -25,6 +24,8 @@ def init_db():
                   metode TEXT,
                   status TEXT,
                   keterangan TEXT)''')
+    
+    # Tabel item transaksi
     c.execute('''CREATE TABLE IF NOT EXISTS transaction_items
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   transaction_id INTEGER,
@@ -38,7 +39,20 @@ def init_db():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   nama TEXT UNIQUE,
                   harga INTEGER)''')
-    # Insert menu default jika kosong
+    
+    # Tabel settings
+    c.execute('''CREATE TABLE IF NOT EXISTS settings
+                 (key TEXT PRIMARY KEY, value TEXT)''')
+    
+    # Cek kolom grand_total, jika tidak ada (database lama), tambahkan
+    c.execute("PRAGMA table_info(transactions)")
+    columns = [row[1] for row in c.fetchall()]
+    if "grand_total" not in columns:
+        c.execute("ALTER TABLE transactions ADD COLUMN grand_total INTEGER")
+    if "tax" not in columns:
+        c.execute("ALTER TABLE transactions ADD COLUMN tax REAL")
+    
+    # Insert default menu jika kosong
     c.execute("SELECT COUNT(*) FROM menu")
     if c.fetchone()[0] == 0:
         default_menu = [
@@ -51,14 +65,12 @@ def init_db():
         ]
         c.executemany("INSERT INTO menu (nama, harga) VALUES (?, ?)", default_menu)
     
-    # Tabel settings
-    c.execute('''CREATE TABLE IF NOT EXISTS settings
-                 (key TEXT PRIMARY KEY, value TEXT)''')
     # PIN default
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pin_hash', ?)",
               (hashlib.sha256("000000".encode()).hexdigest(),))
-    # Tax default (%)
+    # Tax default
     c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('tax_rate', '10')")
+    
     conn.commit()
     conn.close()
 
@@ -130,7 +142,13 @@ def insert_transaction(timestamp, total, tax, grand_total, metode, status, items
 
 def get_all_transactions():
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
+    # Cek apakah kolom grand_total ada, jika tidak, hitung dari total (asumsi total = grand_total)
+    try:
+        df = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
+    except:
+        # Fallback jika kolom tidak ada
+        df = pd.read_sql_query("SELECT id, timestamp, total, metode, status, keterangan FROM transactions ORDER BY id DESC", conn)
+        df["grand_total"] = df["total"]
     conn.close()
     return df
 
@@ -140,7 +158,7 @@ def get_transaction_items(trans_id):
     conn.close()
     return df
 
-# Inisialisasi database
+# Inisialisasi database (dengan migrasi)
 init_db()
 
 # ------------------------------
@@ -151,14 +169,15 @@ if "logged_in" not in st.session_state:
 if "cart" not in st.session_state:
     st.session_state.cart = []
 if "tax_rate" not in st.session_state:
-    st.session_state.tax_rate = float(get_setting("tax_rate") or 10)
+    tax_str = get_setting("tax_rate")
+    st.session_state.tax_rate = float(tax_str) if tax_str else 10.0
 if "show_struk" not in st.session_state:
     st.session_state.show_struk = False
 if "last_transaction" not in st.session_state:
     st.session_state.last_transaction = None
 
 # ------------------------------
-# UI: Halaman Login (jika belum login)
+# Halaman Login
 # ------------------------------
 if not st.session_state.logged_in:
     st.set_page_config(page_title="Login Kasir", page_icon="🔐")
@@ -179,7 +198,7 @@ if not st.session_state.logged_in:
 st.set_page_config(page_title="Kasir & Dashboard", layout="wide")
 st.title("🧾 Kasir & Dashboard")
 
-# Sidebar logout dan info
+# Sidebar
 with st.sidebar:
     st.write(f"✅ Login berhasil")
     if st.button("🚪 Logout"):
@@ -188,12 +207,13 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
     st.subheader("⚙️ Pengaturan")
-    st.session_state.tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5, value=st.session_state.tax_rate)
+    tax_input = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
+                                value=st.session_state.tax_rate)
     if st.button("Simpan Tax Default"):
-        update_setting("tax_rate", str(st.session_state.tax_rate))
+        st.session_state.tax_rate = tax_input
+        update_setting("tax_rate", str(tax_input))
         st.success("Tax rate disimpan!")
 
-# Ambil data menu dari DB
 menu_df = get_menu()
 PRODUK = menu_df.to_dict('records')
 
@@ -203,7 +223,6 @@ tab1, tab2, tab3 = st.tabs(["🛒 Kasir", "📊 Dashboard", "📋 Kelola Menu"])
 with tab1:
     st.header("Transaksi Baru")
 
-    # Tampilkan struk jika ada
     if st.session_state.show_struk and st.session_state.last_transaction:
         trans = st.session_state.last_transaction
         items = trans['items']
@@ -232,7 +251,7 @@ with tab1:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🖨️ Cetak Struk", use_container_width=True):
-                st.components.v1.html(f"<script>window.print();</script>")
+                st.components.v1.html("<script>window.print();</script>")
         with col2:
             if st.button("✅ Selesai", use_container_width=True):
                 st.session_state.show_struk = False
@@ -262,8 +281,8 @@ with tab1:
                 st.write(f"- {item['nama']} x{item['qty']} = Rp{item['harga']*item['qty']:,}")
             st.markdown(f"### Subtotal: **Rp{total:,}**")
             
-            # Input tax
-            tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5, value=st.session_state.tax_rate, key="tax_input")
+            tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
+                                       value=st.session_state.tax_rate, key="tax_input")
             tax_amount = total * tax_rate / 100
             grand_total = total + tax_amount
             st.write(f"Tax: Rp{int(tax_amount):,}")
@@ -293,7 +312,7 @@ with tab1:
                     st.session_state.show_struk = True
                     st.rerun()
         else:
-            st.info("Keranjang kosong, silakan pilih produk.")
+            st.info("Keranjang kosong.")
 
 # ====================== TAB DASHBOARD ======================
 with tab2:
@@ -302,10 +321,13 @@ with tab2:
     if df_trans.empty:
         st.info("Belum ada transaksi.")
     else:
-        total_omset = df_trans["grand_total"].sum()
+        # Gunakan kolom grand_total jika ada, jika tidak hitung dari total (untuk data lama)
+        if "grand_total" in df_trans.columns:
+            total_omset = df_trans["grand_total"].sum()
+        else:
+            total_omset = df_trans["total"].sum()
         st.metric("💰 Total Omset", f"Rp{total_omset:,.0f}")
         
-        # Produk terlaris
         st.subheader("🏆 Produk Terlaris")
         all_items = []
         for tid in df_trans["id"]:
@@ -318,16 +340,15 @@ with tab2:
             fig_bar = px.bar(df_produk, x="nama", y="qty", color="nama", title="Produk Terlaris")
             st.plotly_chart(fig_bar, use_container_width=True)
         
-        # Proporsi pembayaran
         st.subheader("📌 Proporsi Metode Pembayaran")
         metode_counts = df_trans["metode"].value_counts().reset_index()
         metode_counts.columns = ["Metode", "Jumlah"]
         fig_pie = px.pie(metode_counts, values="Jumlah", names="Metode", hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
         
-        # Riwayat transaksi
         with st.expander("📋 Riwayat Transaksi"):
-            st.dataframe(df_trans.drop(columns=["id"], errors="ignore"), use_container_width=True)
+            cols_to_show = [c for c in ["id", "timestamp", "total", "tax", "grand_total", "metode", "status"] if c in df_trans.columns]
+            st.dataframe(df_trans[cols_to_show], use_container_width=True)
             tid_pilih = st.selectbox("Detail item transaksi ID:", df_trans["id"].tolist())
             if tid_pilih:
                 detail = get_transaction_items(tid_pilih)
@@ -335,9 +356,7 @@ with tab2:
 
 # ====================== TAB KELOLA MENU ======================
 with tab3:
-    st.header("📋 Kelola Menu Makanan/Minuman")
-    
-    # Form tambah
+    st.header("📋 Kelola Menu")
     with st.form("add_menu"):
         st.subheader("Tambah Menu Baru")
         nama_baru = st.text_input("Nama")
@@ -352,8 +371,7 @@ with tab3:
             else:
                 st.error("Nama tidak boleh kosong.")
     
-    # Daftar menu
-    st.subheader("Daftar Menu Saat Ini")
+    st.subheader("Daftar Menu")
     menu = get_menu()
     if not menu.empty:
         for idx, row in menu.iterrows():
@@ -366,7 +384,6 @@ with tab3:
                 delete_menu_item(row['id'])
                 st.rerun()
         
-        # Form edit jika ada yang diklik
         if "edit_menu_id" in st.session_state and st.session_state.edit_menu_id:
             edit_id = st.session_state.edit_menu_id
             row = menu[menu['id'] == edit_id].iloc[0]
