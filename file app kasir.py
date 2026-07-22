@@ -4,6 +4,7 @@ import plotly.express as px
 from datetime import datetime
 import sqlite3
 import hashlib
+import os
 
 # ------------------------------
 # Database
@@ -11,48 +12,67 @@ import hashlib
 DB_PATH = "/tmp/kasir.db"
 
 def init_db():
+    # Jika ada file database yang corrupt atau tidak bisa diperbaiki, hapus
+    # (Hanya untuk pengembangan, jangan digunakan di production)
+    if os.path.exists(DB_PATH):
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.close()
+        except:
+            os.remove(DB_PATH)
+    
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Tabel transaksi
-    c.execute('''CREATE TABLE IF NOT EXISTS transactions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp TEXT,
-                  total INTEGER,
-                  tax REAL,
-                  grand_total INTEGER,
-                  metode TEXT,
-                  status TEXT,
-                  keterangan TEXT)''')
+    # ------------------------------------------------
+    # Drop tabel transaksi yang lama (kita buat ulang)
+    # agar skema pasti benar.
+    c.execute("DROP TABLE IF EXISTS transactions")
+    c.execute("DROP TABLE IF EXISTS transaction_items")
+    # ------------------------------------------------
     
-    # Tabel item transaksi
-    c.execute('''CREATE TABLE IF NOT EXISTS transaction_items
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  transaction_id INTEGER,
-                  nama TEXT,
-                  harga INTEGER,
-                  qty INTEGER,
-                  FOREIGN KEY(transaction_id) REFERENCES transactions(id))''')
+    # Buat tabel transaksi dengan semua kolom
+    c.execute('''
+        CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            total INTEGER NOT NULL,
+            tax REAL NOT NULL DEFAULT 0,
+            grand_total INTEGER NOT NULL,
+            metode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            keterangan TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE transaction_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL,
+            nama TEXT NOT NULL,
+            harga INTEGER NOT NULL,
+            qty INTEGER NOT NULL,
+            FOREIGN KEY(transaction_id) REFERENCES transactions(id)
+        )
+    ''')
     
     # Tabel menu
-    c.execute('''CREATE TABLE IF NOT EXISTS menu
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  nama TEXT UNIQUE,
-                  harga INTEGER)''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS menu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nama TEXT UNIQUE,
+            harga INTEGER NOT NULL
+        )
+    ''')
     
     # Tabel settings
-    c.execute('''CREATE TABLE IF NOT EXISTS settings
-                 (key TEXT PRIMARY KEY, value TEXT)''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     
-    # Tambahkan kolom yang mungkin belum ada (untuk database lama)
-    c.execute("PRAGMA table_info(transactions)")
-    columns = [row[1] for row in c.fetchall()]
-    if "grand_total" not in columns:
-        c.execute("ALTER TABLE transactions ADD COLUMN grand_total INTEGER")
-    if "tax" not in columns:
-        c.execute("ALTER TABLE transactions ADD COLUMN tax REAL DEFAULT 0")
-    
-    # Insert default jika kosong
+    # Menu default (jika tabel kosong)
     c.execute("SELECT COUNT(*) FROM menu")
     if c.fetchone()[0] == 0:
         default_menu = [
@@ -104,10 +124,6 @@ def get_currency():
     sym = get_setting("currency_symbol")
     return sym if sym else "Rp"
 
-def format_currency(amount):
-    sym = get_currency()
-    return f"{sym} {amount:,.0f}" if sym else f"Rp {amount:,.0f}"
-
 def get_menu():
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT * FROM menu ORDER BY nama", conn)
@@ -140,46 +156,20 @@ def delete_menu_item(id):
 def insert_transaction(timestamp, total, tax, grand_total, metode, status, items, keterangan=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Pastikan kolom grand_total ada (double-check)
-    try:
-        c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
-                     VALUES (?,?,?,?,?,?,?)''',
-                  (timestamp, total, tax, grand_total, metode, status, keterangan))
-        trans_id = c.lastrowid
-        for item in items:
-            c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
-                      (trans_id, item["nama"], item["harga"], item["qty"]))
-        conn.commit()
-        conn.close()
-        return trans_id
-    except sqlite3.OperationalError as e:
-        # Coba tambahkan kolom jika belum ada
-        c.execute("PRAGMA table_info(transactions)")
-        cols = [row[1] for row in c.fetchall()]
-        if "grand_total" not in cols:
-            c.execute("ALTER TABLE transactions ADD COLUMN grand_total INTEGER")
-        if "tax" not in cols:
-            c.execute("ALTER TABLE transactions ADD COLUMN tax REAL DEFAULT 0")
-        conn.commit()
-        # Ulangi INSERT
-        c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
-                     VALUES (?,?,?,?,?,?,?)''',
-                  (timestamp, total, tax, grand_total, metode, status, keterangan))
-        trans_id = c.lastrowid
-        for item in items:
-            c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
-                      (trans_id, item["nama"], item["harga"], item["qty"]))
-        conn.commit()
-        conn.close()
-        return trans_id
+    c.execute('''INSERT INTO transactions (timestamp, total, tax, grand_total, metode, status, keterangan)
+                 VALUES (?,?,?,?,?,?,?)''',
+              (timestamp, total, tax, grand_total, metode, status, keterangan))
+    trans_id = c.lastrowid
+    for item in items:
+        c.execute("INSERT INTO transaction_items (transaction_id, nama, harga, qty) VALUES (?,?,?,?)",
+                  (trans_id, item["nama"], item["harga"], item["qty"]))
+    conn.commit()
+    conn.close()
+    return trans_id
 
 def get_all_transactions():
     conn = sqlite3.connect(DB_PATH)
-    try:
-        df = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
-    except:
-        df = pd.read_sql_query("SELECT id, timestamp, total, metode, status, keterangan FROM transactions ORDER BY id DESC", conn)
-        df["grand_total"] = df["total"]
+    df = pd.read_sql_query("SELECT * FROM transactions ORDER BY id DESC", conn)
     conn.close()
     return df
 
@@ -189,7 +179,7 @@ def get_transaction_items(trans_id):
     conn.close()
     return df
 
-# Inisialisasi
+# Inisialisasi database
 init_db()
 
 # ------------------------------
@@ -372,10 +362,7 @@ with tab2:
     if df_trans.empty:
         st.info("Belum ada transaksi.")
     else:
-        if "grand_total" in df_trans.columns:
-            total_omset = df_trans["grand_total"].sum()
-        else:
-            total_omset = df_trans["total"].sum()
+        total_omset = df_trans["grand_total"].sum()
         st.metric("💰 Total Omset", f"{CURR}{total_omset:,.0f}")
         
         st.subheader("🏆 Produk Terlaris")
@@ -397,8 +384,7 @@ with tab2:
         st.plotly_chart(fig_pie, use_container_width=True)
         
         with st.expander("📋 Riwayat Transaksi"):
-            cols_show = [c for c in ["id","timestamp","total","tax","grand_total","metode","status"] if c in df_trans.columns]
-            st.dataframe(df_trans[cols_show], use_container_width=True)
+            st.dataframe(df_trans.drop(columns=["id"], errors="ignore"), use_container_width=True)
             tid_pilih = st.selectbox("Detail item transaksi ID:", df_trans["id"].tolist())
             if tid_pilih:
                 detail = get_transaction_items(tid_pilih)
