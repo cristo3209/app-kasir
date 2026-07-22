@@ -18,13 +18,13 @@ def init_db():
             conn.close()
         except:
             os.remove(DB_PATH)
-    
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     c.execute("DROP TABLE IF EXISTS transactions")
     c.execute("DROP TABLE IF EXISTS transaction_items")
-    
+
     c.execute('''
         CREATE TABLE transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +47,6 @@ def init_db():
             FOREIGN KEY(transaction_id) REFERENCES transactions(id)
         )
     ''')
-    
     c.execute('''
         CREATE TABLE IF NOT EXISTS menu (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,14 +54,13 @@ def init_db():
             harga INTEGER NOT NULL
         )
     ''')
-    
     c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT
         )
     ''')
-    
+
     c.execute("SELECT COUNT(*) FROM menu")
     if c.fetchone()[0] == 0:
         default_menu = [
@@ -74,15 +72,16 @@ def init_db():
             ("Kopi", 10000)
         ]
         c.executemany("INSERT INTO menu (nama, harga) VALUES (?, ?)", default_menu)
-    
+
     defaults = {
         "pin_hash": hashlib.sha256("000000".encode()).hexdigest(),
+        "recovery_code": "ADMIN123",
         "tax_rate": "10",
         "currency_symbol": "Rp"
     }
     for key, val in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
-    
+
     conn.commit()
     conn.close()
 
@@ -108,6 +107,10 @@ def verify_pin(pin):
 def change_pin(new_pin):
     new_hash = hashlib.sha256(new_pin.encode()).hexdigest()
     update_setting("pin_hash", new_hash)
+
+def verify_recovery_code(code):
+    stored = get_setting("recovery_code")
+    return stored == code
 
 def get_currency():
     sym = get_setting("currency_symbol")
@@ -187,6 +190,8 @@ if "show_struk" not in st.session_state:
     st.session_state.show_struk = False
 if "last_transaction" not in st.session_state:
     st.session_state.last_transaction = None
+if "show_reset" not in st.session_state:
+    st.session_state.show_reset = False
 
 # ------------------------------
 # Halaman Login
@@ -194,39 +199,46 @@ if "last_transaction" not in st.session_state:
 if not st.session_state.logged_in:
     st.set_page_config(page_title="Login Kasir", page_icon="🔐")
     st.title("🔐 Akses Kasir")
-    with st.form("login_form"):
-        pin = st.text_input("Masukkan PIN", type="password", max_chars=6)
-        if st.form_submit_button("Masuk"):
-            if verify_pin(pin):
-                st.session_state.logged_in = True
+
+    if st.session_state.show_reset:
+        st.subheader("🔄 Reset PIN")
+        st.info("Masukkan kode pemulihan untuk mereset PIN ke 000000.")
+        recovery_input = st.text_input("Kode Pemulihan", type="password")
+        if st.button("✅ Reset PIN"):
+            if verify_recovery_code(recovery_input):
+                change_pin("000000")
+                st.success("PIN berhasil direset ke 000000. Silakan login.")
+                st.session_state.show_reset = False
                 st.rerun()
             else:
-                st.error("PIN salah!")
+                st.error("Kode pemulihan salah!")
+        if st.button("⬅️ Kembali ke Login"):
+            st.session_state.show_reset = False
+            st.rerun()
+    else:
+        with st.form("login_form"):
+            pin = st.text_input("Masukkan PIN", type="password", max_chars=6)
+            col1, col2 = st.columns(2)
+            with col1:
+                login_btn = st.form_submit_button("Masuk")
+            with col2:
+                reset_btn = st.form_submit_button("❓ Lupa PIN?")
+
+            if login_btn:
+                if verify_pin(pin):
+                    st.session_state.logged_in = True
+                    st.rerun()
+                else:
+                    st.error("PIN salah!")
+            if reset_btn:
+                st.session_state.show_reset = True
+                st.rerun()
     st.stop()
 
 # ==============================
 # SETELAH LOGIN
 # ==============================
 st.set_page_config(page_title="Kasir & Dashboard", layout="wide")
-
-# CSS untuk print: sembunyikan sidebar, header, tab, tombol, dll.
-st.markdown("""
-<style>
-@media print {
-  /* Sembunyikan sidebar, header, tombol, dan semua elemen selain struk */
-  .css-1d391kg, .css-1v0mbdj, .css-1lsmgbg, .css-1r6slb0, .stButton, .stRadio, .stNumberInput, 
-  .stForm, .stTabs, header, footer, [data-testid="stSidebar"], [data-testid="stToolbar"] {
-    display: none !important;
-  }
-  /* Struk akan tampil penuh */
-  .print-area {
-    display: block !important;
-    visibility: visible !important;
-  }
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🧾 Kasir & Dashboard")
 
 # Sidebar
@@ -238,6 +250,7 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
     st.subheader("⚙️ Pengaturan")
+
     # Tax rate
     new_tax = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
                               value=st.session_state.tax_rate)
@@ -245,12 +258,15 @@ with st.sidebar:
         st.session_state.tax_rate = new_tax
         update_setting("tax_rate", str(new_tax))
         st.success("Tax rate disimpan!")
+
     # Mata uang
     new_currency = st.text_input("Simbol Mata Uang", value=st.session_state.currency_symbol)
     if st.button("Simpan Mata Uang"):
         st.session_state.currency_symbol = new_currency
         update_setting("currency_symbol", new_currency)
         st.success("Mata uang diperbarui!")
+        st.rerun()  # <-- penting agar langsung berubah
+
     # Ganti PIN
     with st.expander("🔑 Ganti PIN"):
         old_pin = st.text_input("PIN Lama", type="password", key="old_pin")
@@ -261,6 +277,21 @@ with st.sidebar:
                 st.success("PIN berhasil diubah!")
             else:
                 st.error("PIN lama salah!")
+
+    # Ganti Kode Pemulihan
+    with st.expander("🔄 Ganti Kode Pemulihan"):
+        current_code = get_setting("recovery_code")
+        st.text(f"Kode saat ini: {current_code}")
+        new_code = st.text_input("Kode Baru", type="password", key="new_code")
+        pin_confirm = st.text_input("PIN Konfirmasi", type="password", key="pin_confirm")
+        if st.button("Simpan Kode Pemulihan"):
+            if not verify_pin(pin_confirm):
+                st.error("PIN konfirmasi salah!")
+            elif len(new_code) < 6:
+                st.error("Kode minimal 6 karakter.")
+            else:
+                update_setting("recovery_code", new_code)
+                st.success("Kode pemulihan berhasil diubah!")
 
 # Ambil data menu
 menu_df = get_menu()
@@ -276,43 +307,61 @@ with tab1:
     if st.session_state.show_struk and st.session_state.last_transaction:
         trans = st.session_state.last_transaction
         items = trans['items']
-        # Area yang akan dicetak
-        st.markdown('<div class="print-area">', unsafe_allow_html=True)
         st.subheader("🧾 Struk Pembayaran")
+
+        # Bangun HTML struk dengan CSS print
+        items_html = ""
+        for item in items:
+            subtotal = item['harga'] * item['qty']
+            items_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>{CURR} {subtotal:,}</td></tr>"
+
         struk_html = f"""
-        <div style="border:1px solid #ccc; padding:15px; border-radius:10px; max-width:400px; margin:auto; font-family:monospace;">
+        <html>
+        <head>
+        <style>
+          @media print {{
+            body * {{
+              visibility: hidden;
+            }}
+            #printable, #printable * {{
+              visibility: visible;
+            }}
+            #printable {{
+              position: absolute;
+              left: 0;
+              top: 0;
+              width: 100%;
+              padding: 20px;
+            }}
+          }}
+        </style>
+        </head>
+        <body>
+          <div id="printable">
             <h3 style="text-align:center;">STRUK PEMBAYARAN</h3>
             <p style="text-align:center;">{trans['timestamp']}</p>
             <hr>
             <table style="width:100%;">
-        """
-        for item in items:
-            subtotal = item['harga'] * item['qty']
-            struk_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>{CURR}{subtotal:,}</td></tr>"
-        struk_html += f"""
+              {items_html}
             </table>
             <hr>
-            <p>Subtotal: <b>{CURR}{trans['total']:,}</b></p>
-            <p>Tax ({trans['tax_rate']:.1f}%): <b>{CURR}{int(trans['tax']):,}</b></p>
-            <h3>Total: <b>{CURR}{trans['grand_total']:,}</b></h3>
+            <p>Subtotal: <b>{CURR} {trans['total']:,}</b></p>
+            <p>Tax ({trans['tax_rate']:.1f}%): <b>{CURR} {int(trans['tax']):,}</b></p>
+            <h3>Total: <b>{CURR} {trans['grand_total']:,}</b></h3>
             <p>Metode: <b>{trans['metode']}</b></p>
             <p>Status: <b>{trans['status']}</b></p>
-        </div>
+          </div>
+          <button onclick="window.print()" style="margin:20px; padding:10px 20px;">🖨️ Cetak Struk</button>
+        </body>
+        </html>
         """
-        st.components.v1.html(struk_html, height=400, scrolling=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🖨️ Cetak Struk", use_container_width=True):
-                # Panggil window.print() melalui JavaScript
-                st.components.v1.html("<script>window.print();</script>")
-        with col2:
-            if st.button("✅ Selesai", use_container_width=True):
-                st.session_state.show_struk = False
-                st.session_state.last_transaction = None
-                st.rerun()
+        st.components.v1.html(struk_html, height=500, scrolling=True)
+
+        if st.button("✅ Selesai", use_container_width=True):
+            st.session_state.show_struk = False
+            st.session_state.last_transaction = None
+            st.rerun()
     else:
-        # Form pemilihan produk
         st.subheader("Menu")
         items_input = {}
         cols = st.columns(3)
@@ -334,16 +383,16 @@ with tab1:
             for item in st.session_state.cart:
                 st.write(f"- {item['nama']} x{item['qty']} = {CURR}{item['harga']*item['qty']:,}")
             st.markdown(f"### Subtotal: **{CURR}{total:,}**")
-            
+
             tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
                                        value=st.session_state.tax_rate, key="tax_input")
             tax_amount = total * tax_rate / 100
             grand_total = total + tax_amount
             st.write(f"Tax: {CURR}{int(tax_amount):,}")
             st.markdown(f"## Total Bayar: **{CURR}{int(grand_total):,}**")
-            
+
             metode = st.radio("Metode Pembayaran", ["QRIS", "DuitNow QR", "GoPay", "Kartu Kredit", "Cash"])
-            
+
             if st.button("✅ Selesaikan Pembayaran", type="primary", use_container_width=True):
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 trans_id = insert_transaction(
@@ -377,7 +426,7 @@ with tab2:
     else:
         total_omset = df_trans["grand_total"].sum()
         st.metric("💰 Total Omset", f"{CURR}{total_omset:,.0f}")
-        
+
         st.subheader("🏆 Produk Terlaris")
         all_items = []
         for tid in df_trans["id"]:
@@ -389,13 +438,13 @@ with tab2:
             df_produk = df_items.groupby("nama")["qty"].sum().reset_index().sort_values("qty", ascending=False)
             fig_bar = px.bar(df_produk, x="nama", y="qty", color="nama", title="Produk Terlaris")
             st.plotly_chart(fig_bar, use_container_width=True)
-        
+
         st.subheader("📌 Proporsi Metode Pembayaran")
         metode_counts = df_trans["metode"].value_counts().reset_index()
         metode_counts.columns = ["Metode", "Jumlah"]
         fig_pie = px.pie(metode_counts, values="Jumlah", names="Metode", hole=0.4)
         st.plotly_chart(fig_pie, use_container_width=True)
-        
+
         with st.expander("📋 Riwayat Transaksi"):
             st.dataframe(df_trans.drop(columns=["id"], errors="ignore"), use_container_width=True)
             tid_pilih = st.selectbox("Detail item transaksi ID:", df_trans["id"].tolist())
@@ -419,7 +468,7 @@ with tab3:
                     st.error("Nama sudah ada!")
             else:
                 st.error("Nama tidak boleh kosong.")
-    
+
     st.subheader("Daftar Menu")
     menu = get_menu()
     if not menu.empty:
@@ -432,7 +481,7 @@ with tab3:
             if col4.button("🗑️", key=f"del_{row['id']}"):
                 delete_menu_item(row['id'])
                 st.rerun()
-        
+
         if "edit_menu_id" in st.session_state and st.session_state.edit_menu_id:
             edit_id = st.session_state.edit_menu_id
             row = menu[menu['id'] == edit_id].iloc[0]
