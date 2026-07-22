@@ -12,8 +12,6 @@ import os
 DB_PATH = "/tmp/kasir.db"
 
 def init_db():
-    # Jika ada file database yang corrupt atau tidak bisa diperbaiki, hapus
-    # (Hanya untuk pengembangan, jangan digunakan di production)
     if os.path.exists(DB_PATH):
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -24,14 +22,9 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # ------------------------------------------------
-    # Drop tabel transaksi yang lama (kita buat ulang)
-    # agar skema pasti benar.
     c.execute("DROP TABLE IF EXISTS transactions")
     c.execute("DROP TABLE IF EXISTS transaction_items")
-    # ------------------------------------------------
     
-    # Buat tabel transaksi dengan semua kolom
     c.execute('''
         CREATE TABLE transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,7 +48,6 @@ def init_db():
         )
     ''')
     
-    # Tabel menu
     c.execute('''
         CREATE TABLE IF NOT EXISTS menu (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,7 +56,6 @@ def init_db():
         )
     ''')
     
-    # Tabel settings
     c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -72,7 +63,6 @@ def init_db():
         )
     ''')
     
-    # Menu default (jika tabel kosong)
     c.execute("SELECT COUNT(*) FROM menu")
     if c.fetchone()[0] == 0:
         default_menu = [
@@ -85,7 +75,6 @@ def init_db():
         ]
         c.executemany("INSERT INTO menu (nama, harga) VALUES (?, ?)", default_menu)
     
-    # Pengaturan default
     defaults = {
         "pin_hash": hashlib.sha256("000000".encode()).hexdigest(),
         "tax_rate": "10",
@@ -219,6 +208,25 @@ if not st.session_state.logged_in:
 # SETELAH LOGIN
 # ==============================
 st.set_page_config(page_title="Kasir & Dashboard", layout="wide")
+
+# CSS untuk print: sembunyikan sidebar, header, tab, tombol, dll.
+st.markdown("""
+<style>
+@media print {
+  /* Sembunyikan sidebar, header, tombol, dan semua elemen selain struk */
+  .css-1d391kg, .css-1v0mbdj, .css-1lsmgbg, .css-1r6slb0, .stButton, .stRadio, .stNumberInput, 
+  .stForm, .stTabs, header, footer, [data-testid="stSidebar"], [data-testid="stToolbar"] {
+    display: none !important;
+  }
+  /* Struk akan tampil penuh */
+  .print-area {
+    display: block !important;
+    visibility: visible !important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🧾 Kasir & Dashboard")
 
 # Sidebar
@@ -268,6 +276,8 @@ with tab1:
     if st.session_state.show_struk and st.session_state.last_transaction:
         trans = st.session_state.last_transaction
         items = trans['items']
+        # Area yang akan dicetak
+        st.markdown('<div class="print-area">', unsafe_allow_html=True)
         st.subheader("🧾 Struk Pembayaran")
         struk_html = f"""
         <div style="border:1px solid #ccc; padding:15px; border-radius:10px; max-width:400px; margin:auto; font-family:monospace;">
@@ -290,9 +300,11 @@ with tab1:
         </div>
         """
         st.components.v1.html(struk_html, height=400, scrolling=True)
+        st.markdown('</div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🖨️ Cetak Struk", use_container_width=True):
+                # Panggil window.print() melalui JavaScript
                 st.components.v1.html("<script>window.print();</script>")
         with col2:
             if st.button("✅ Selesai", use_container_width=True):
@@ -300,6 +312,7 @@ with tab1:
                 st.session_state.last_transaction = None
                 st.rerun()
     else:
+        # Form pemilihan produk
         st.subheader("Menu")
         items_input = {}
         cols = st.columns(3)
