@@ -76,8 +76,7 @@ def init_db():
     defaults = {
         "pin_hash": hashlib.sha256("000000".encode()).hexdigest(),
         "recovery_code": "ADMIN123",
-        "tax_rate": "10",
-        "currency_symbol": "Rp"
+        "tax_rate": "10"
     }
     for key, val in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, val))
@@ -111,10 +110,6 @@ def change_pin(new_pin):
 def verify_recovery_code(code):
     stored = get_setting("recovery_code")
     return stored == code
-
-def get_currency():
-    sym = get_setting("currency_symbol")
-    return sym if sym else "Rp"
 
 def get_menu():
     conn = sqlite3.connect(DB_PATH)
@@ -185,7 +180,7 @@ if "tax_rate" not in st.session_state:
     tax_str = get_setting("tax_rate")
     st.session_state.tax_rate = float(tax_str) if tax_str else 10.0
 if "currency_symbol" not in st.session_state:
-    st.session_state.currency_symbol = get_currency()
+    st.session_state.currency_symbol = "Rp"   # ⭐️ default mata uang
 if "show_struk" not in st.session_state:
     st.session_state.show_struk = False
 if "last_transaction" not in st.session_state:
@@ -259,13 +254,11 @@ with st.sidebar:
         update_setting("tax_rate", str(new_tax))
         st.success("Tax rate disimpan!")
 
-    # Mata uang
+    # Mata uang (hanya session state, langsung berubah)
     new_currency = st.text_input("Simbol Mata Uang", value=st.session_state.currency_symbol)
     if st.button("Simpan Mata Uang"):
         st.session_state.currency_symbol = new_currency
-        update_setting("currency_symbol", new_currency)
         st.success(f"Mata uang berubah menjadi {new_currency}")
-        st.rerun()  # Wajib untuk refresh UI
 
     # Ganti PIN
     with st.expander("🔑 Ganti PIN"):
@@ -297,7 +290,6 @@ with st.sidebar:
 menu_df = get_menu()
 PRODUK = menu_df.to_dict('records')
 
-# ⭐ Gunakan langsung st.session_state.currency_symbol setiap kali, bukan variabel CURR
 def curr():
     return st.session_state.currency_symbol
 
