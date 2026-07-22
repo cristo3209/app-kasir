@@ -259,13 +259,16 @@ with st.sidebar:
         update_setting("tax_rate", str(new_tax))
         st.success("Tax rate disimpan!")
 
+
     # Mata uang
     new_currency = st.text_input("Simbol Mata Uang", value=st.session_state.currency_symbol)
     if st.button("Simpan Mata Uang"):
+        # Update session state langsung
         st.session_state.currency_symbol = new_currency
+        # Simpan ke database
         update_setting("currency_symbol", new_currency)
-        st.success("Mata uang diperbarui!")
-        st.rerun()  # <-- penting agar langsung berubah
+        st.success(f"Mata uang berubah menjadi {new_currency}")
+        # Tidak perlu st.rerun(), Streamlit akan otomatis refresh widget
 
     # Ganti PIN
     with st.expander("🔑 Ganti PIN"):
