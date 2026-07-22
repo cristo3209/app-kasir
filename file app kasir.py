@@ -113,9 +113,16 @@ PRODUK = [
 ]
 
 # ------------------------------
-# Fungsi QR
+# Fungsi QR (data aman, tidak memicu error QRIS)
 # ------------------------------
-def generate_qr(data: str):
+def generate_qr(metode, total, phone=None):
+    """Membuat QR code dengan teks simulasi, bukan format QRIS asli."""
+    if metode in ["QRIS", "DuitNow QR"]:
+        data = f"Simulasi {metode} - Total: Rp{total:,}\nGunakan tombol 'Selesaikan Pembayaran' untuk menyelesaikan."
+    elif metode == "GoPay":
+        data = f"Simulasi GoPay ({phone}) - Total: Rp{total:,}\nGunakan tombol di bawah untuk menyelesaikan."
+    else:
+        data = f"Simulasi Pembayaran - Total: Rp{total:,}"
     qr = qrcode.make(data)
     buf = io.BytesIO()
     qr.save(buf, format="PNG")
@@ -126,7 +133,8 @@ def generate_qr(data: str):
 # ------------------------------
 st.set_page_config(page_title="Kasir & Dashboard", layout="wide")
 st.title("🧾 Aplikasi Kasir + Dashboard")
-st.markdown("Simulasi Pembayaran via **Xendit** — QRIS, DuitNow QR, GoPay, Kartu Kredit, Cash")
+st.markdown("**Simulasi Pembayaran via Xendit** — QRIS, DuitNow QR, GoPay, Kartu Kredit, Cash")
+st.info("ℹ️ QR Code hanya untuk visualisasi. Gunakan tombol 'Selesaikan Pembayaran' untuk menyelesaikan transaksi simulasi.")
 
 tab1, tab2 = st.tabs(["🛒 Kasir", "📊 Dashboard"])
 
@@ -178,10 +186,9 @@ with tab1:
 
         # ========== QRIS / DuitNow QR ==========
         if metode in ["QRIS", "DuitNow QR"]:
-            st.subheader(f"📱 Bayar dengan {metode}")
-            qr_string = f"XENDIT|{metode}|{datetime.now().timestamp()}|Rp{total}"
-            qr_bytes = generate_qr(qr_string)
-            st.image(qr_bytes, caption=f"Scan {metode} untuk membayar Rp{total:,}", width=300)
+            st.subheader(f"📱 Bayar dengan {metode} (Simulasi)")
+            qr_bytes = generate_qr(metode, total)
+            st.image(qr_bytes, caption=f"Scan {metode} (Simulasi) untuk membayar Rp{total:,}", width=300)
 
             if st.button("✅ Selesaikan Pembayaran", key="bayar_qr"):
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -201,11 +208,10 @@ with tab1:
 
         # ========== GoPay ==========
         elif metode == "GoPay":
-            st.subheader("📱 Bayar dengan GoPay")
+            st.subheader("📱 Bayar dengan GoPay (Simulasi)")
             gopay_phone = st.text_input("Nomor HP terdaftar di GoPay", max_chars=13, placeholder="081234567890")
-            qr_string = f"GOPAY|{gopay_phone}|{datetime.now().timestamp()}|Rp{total}"
-            qr_bytes = generate_qr(qr_string)
-            st.image(qr_bytes, caption=f"Scan QR untuk bayar dengan GoPay Rp{total:,}", width=300)
+            qr_bytes = generate_qr("GoPay", total, gopay_phone)
+            st.image(qr_bytes, caption=f"Scan QR GoPay (Simulasi) untuk membayar Rp{total:,}", width=300)
 
             if st.button("✅ Selesaikan Pembayaran GoPay", key="bayar_gopay"):
                 if gopay_phone and len(gopay_phone) >= 10:
