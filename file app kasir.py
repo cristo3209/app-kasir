@@ -259,16 +259,13 @@ with st.sidebar:
         update_setting("tax_rate", str(new_tax))
         st.success("Tax rate disimpan!")
 
-
     # Mata uang
     new_currency = st.text_input("Simbol Mata Uang", value=st.session_state.currency_symbol)
     if st.button("Simpan Mata Uang"):
-        # Update session state langsung
         st.session_state.currency_symbol = new_currency
-        # Simpan ke database
         update_setting("currency_symbol", new_currency)
         st.success(f"Mata uang berubah menjadi {new_currency}")
-        # Tidak perlu st.rerun(), Streamlit akan otomatis refresh widget
+        st.rerun()  # Wajib untuk refresh UI
 
     # Ganti PIN
     with st.expander("🔑 Ganti PIN"):
@@ -299,7 +296,10 @@ with st.sidebar:
 # Ambil data menu
 menu_df = get_menu()
 PRODUK = menu_df.to_dict('records')
-CURR = st.session_state.currency_symbol
+
+# ⭐ Gunakan langsung st.session_state.currency_symbol setiap kali, bukan variabel CURR
+def curr():
+    return st.session_state.currency_symbol
 
 tab1, tab2, tab3 = st.tabs(["🛒 Kasir", "📊 Dashboard", "📋 Kelola Menu"])
 
@@ -312,11 +312,10 @@ with tab1:
         items = trans['items']
         st.subheader("🧾 Struk Pembayaran")
 
-        # Bangun HTML struk dengan CSS print
         items_html = ""
         for item in items:
             subtotal = item['harga'] * item['qty']
-            items_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>{CURR} {subtotal:,}</td></tr>"
+            items_html += f"<tr><td>{item['nama']} x{item['qty']}</td><td style='text-align:right;'>{curr()} {subtotal:,}</td></tr>"
 
         struk_html = f"""
         <html>
@@ -348,9 +347,9 @@ with tab1:
               {items_html}
             </table>
             <hr>
-            <p>Subtotal: <b>{CURR} {trans['total']:,}</b></p>
-            <p>Tax ({trans['tax_rate']:.1f}%): <b>{CURR} {int(trans['tax']):,}</b></p>
-            <h3>Total: <b>{CURR} {trans['grand_total']:,}</b></h3>
+            <p>Subtotal: <b>{curr()} {trans['total']:,}</b></p>
+            <p>Tax ({trans['tax_rate']:.1f}%): <b>{curr()} {int(trans['tax']):,}</b></p>
+            <h3>Total: <b>{curr()} {trans['grand_total']:,}</b></h3>
             <p>Metode: <b>{trans['metode']}</b></p>
             <p>Status: <b>{trans['status']}</b></p>
           </div>
@@ -370,7 +369,7 @@ with tab1:
         cols = st.columns(3)
         for i, p in enumerate(PRODUK):
             with cols[i % 3]:
-                qty = st.number_input(f"{p['nama']} ({CURR}{p['harga']:,})", 0, 20, 0, key=f"qty_{p['id']}")
+                qty = st.number_input(f"{p['nama']} ({curr()}{p['harga']:,})", 0, 20, 0, key=f"qty_{p['id']}")
                 items_input[p['id']] = {"nama": p['nama'], "harga": p['harga'], "qty": qty}
         if st.button("➕ Tambahkan ke Keranjang"):
             st.session_state.cart = []
@@ -384,15 +383,15 @@ with tab1:
             st.subheader("🛒 Keranjang")
             total = sum(item["harga"] * item["qty"] for item in st.session_state.cart)
             for item in st.session_state.cart:
-                st.write(f"- {item['nama']} x{item['qty']} = {CURR}{item['harga']*item['qty']:,}")
-            st.markdown(f"### Subtotal: **{CURR}{total:,}**")
+                st.write(f"- {item['nama']} x{item['qty']} = {curr()}{item['harga']*item['qty']:,}")
+            st.markdown(f"### Subtotal: **{curr()}{total:,}**")
 
             tax_rate = st.number_input("Tax Rate (%)", min_value=0.0, max_value=100.0, step=0.5,
                                        value=st.session_state.tax_rate, key="tax_input")
             tax_amount = total * tax_rate / 100
             grand_total = total + tax_amount
-            st.write(f"Tax: {CURR}{int(tax_amount):,}")
-            st.markdown(f"## Total Bayar: **{CURR}{int(grand_total):,}**")
+            st.write(f"Tax: {curr()}{int(tax_amount):,}")
+            st.markdown(f"## Total Bayar: **{curr()}{int(grand_total):,}**")
 
             metode = st.radio("Metode Pembayaran", ["QRIS", "DuitNow QR", "GoPay", "Kartu Kredit", "Cash"])
 
@@ -428,7 +427,7 @@ with tab2:
         st.info("Belum ada transaksi.")
     else:
         total_omset = df_trans["grand_total"].sum()
-        st.metric("💰 Total Omset", f"{CURR}{total_omset:,.0f}")
+        st.metric("💰 Total Omset", f"{curr()}{total_omset:,.0f}")
 
         st.subheader("🏆 Produk Terlaris")
         all_items = []
@@ -461,7 +460,7 @@ with tab3:
     with st.form("add_menu"):
         st.subheader("Tambah Menu Baru")
         nama_baru = st.text_input("Nama")
-        harga_baru = st.number_input(f"Harga ({CURR})", min_value=100, step=100)
+        harga_baru = st.number_input(f"Harga ({curr()})", min_value=100, step=100)
         if st.form_submit_button("➕ Tambahkan"):
             if nama_baru:
                 if add_menu_item(nama_baru, harga_baru):
@@ -478,7 +477,7 @@ with tab3:
         for idx, row in menu.iterrows():
             col1, col2, col3, col4 = st.columns([3,2,1,1])
             col1.write(row["nama"])
-            col2.write(f"{CURR}{row['harga']:,}")
+            col2.write(f"{curr()}{row['harga']:,}")
             if col3.button("✏️", key=f"edit_{row['id']}"):
                 st.session_state.edit_menu_id = row['id']
             if col4.button("🗑️", key=f"del_{row['id']}"):
@@ -491,7 +490,7 @@ with tab3:
             with st.form("edit_menu_form"):
                 st.subheader(f"Edit: {row['nama']}")
                 nama_edit = st.text_input("Nama Baru", value=row['nama'])
-                harga_edit = st.number_input(f"Harga Baru ({CURR})", value=row['harga'], step=100)
+                harga_edit = st.number_input(f"Harga Baru ({curr()})", value=row['harga'], step=100)
                 if st.form_submit_button("💾 Simpan Perubahan"):
                     update_menu_item(edit_id, nama_edit, harga_edit)
                     st.session_state.edit_menu_id = None
