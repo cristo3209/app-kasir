@@ -39,21 +39,25 @@ def init_db():
     conn.close()
 
 def insert_transaction(timestamp, total, metode, status, items, kartu_akhir=None):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO transactions (timestamp, total, metode, status, kartu_akhir)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (timestamp, total, metode, status, kartu_akhir))
-    trans_id = c.lastrowid
-    for item in items:
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
         c.execute('''
-            INSERT INTO transaction_items (transaction_id, nama, harga, qty)
-            VALUES (?, ?, ?, ?)
-        ''', (trans_id, item["nama"], item["harga"], item["qty"]))
-    conn.commit()
-    conn.close()
-    return trans_id
+            INSERT INTO transactions (timestamp, total, metode, status, kartu_akhir)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (timestamp, total, metode, status, kartu_akhir))
+        trans_id = c.lastrowid
+        for item in items:
+            c.execute('''
+                INSERT INTO transaction_items (transaction_id, nama, harga, qty)
+                VALUES (?, ?, ?, ?)
+            ''', (trans_id, item["nama"], item["harga"], item["qty"]))
+        conn.commit()
+        conn.close()
+        return trans_id
+    except Exception as e:
+        st.error(f"Gagal menyimpan transaksi: {e}")
+        return None
 
 def get_all_transactions():
     conn = sqlite3.connect(DB_NAME)
@@ -104,7 +108,7 @@ def generate_qr(data: str):
 # ------------------------------
 st.set_page_config(page_title="Kasir & Dashboard", layout="wide")
 st.title("🧾 Aplikasi Kasir + Dashboard")
-st.markdown("Simulasi Pembayaran via **Xendit** — QRIS, DuitNow QR, Kartu Kredit (data tersimpan di SQLite)")
+st.markdown("Simulasi Pembayaran via **Xendit** — QRIS, DuitNow QR, Kartu Kredit, dan Cash")
 
 tab1, tab2 = st.tabs(["🛒 Kasir", "📊 Dashboard"])
 
@@ -148,12 +152,14 @@ with tab1:
         st.markdown(f"### Total: **Rp{total:,}**")
 
         st.markdown("---")
+        # TAMBAH OPSI CASH
         metode = st.radio(
             "💳 Metode Pembayaran",
-            ["QRIS", "DuitNow QR", "Kartu Kredit"],
+            ["QRIS", "DuitNow QR", "Kartu Kredit", "Cash"],
             key="metode"
         )
 
+        # ========== PEMBAYARAN QR (QRIS / DuitNow QR) ==========
         if metode in ["QRIS", "DuitNow QR"]:
             st.subheader(f"📱 Bayar dengan {metode}")
             qr_string = f"XENDIT|{metode}|INV-TEMP|Rp{total}"
@@ -169,11 +175,15 @@ with tab1:
                     status="Sukses",
                     items=st.session_state.cart
                 )
-                st.session_state.cart = []
-                st.success(f"Pembayaran berhasil! Transaksi #{trans_id} disimpan ke database.")
-                st.rerun()
+                if trans_id is not None:
+                    st.session_state.cart = []
+                    st.success(f"Pembayaran berhasil! Transaksi #{trans_id} disimpan ke database.")
+                    st.rerun()
+                else:
+                    st.error("Transaksi gagal, coba lagi.")
 
-        else:
+        # ========== PEMBAYARAN KARTU KREDIT ==========
+        elif metode == "Kartu Kredit":
             st.subheader("💳 Detail Kartu Kredit")
             with st.form("kartu_form"):
                 nomor = st.text_input("Nomor Kartu (16 digit)", max_chars=16, placeholder="1234567812345678")
@@ -193,11 +203,41 @@ with tab1:
                             items=st.session_state.cart,
                             kartu_akhir=nomor[-4:]
                         )
-                        st.session_state.cart = []
-                        st.success(f"Pembayaran kartu kredit berhasil! Transaksi #{trans_id} disimpan.")
-                        st.rerun()
+                        if trans_id is not None:
+                            st.session_state.cart = []
+                            st.success(f"Pembayaran kartu kredit berhasil! Transaksi #{trans_id} disimpan.")
+                            st.rerun()
+                        else:
+                            st.error("Transaksi gagal, coba lagi.")
                     else:
                         st.error("Mohon isi semua data kartu dengan benar (16 digit nomor, 3 digit CVV).")
+
+        # ========== PEMBAYARAN CASH ==========
+        else:  # Cash
+            st.subheader("💵 Pembayaran Cash")
+            st.write(f"Total yang harus dibayar: **Rp{total:,}**")
+            # Input jumlah uang dari pelanggan
+            uang_dibayar = st.number_input("Jumlah uang diterima (Rp)", min_value=0, value=0, step=1000)
+            if uang_dibayar >= total and total > 0:
+                kembalian = uang_dibayar - total
+                st.write(f"Kembalian: **Rp{kembalian:,}**")
+                if st.button("✅ Selesaikan Pembayaran Cash", key="bayar_cash"):
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    trans_id = insert_transaction(
+                        timestamp=timestamp,
+                        total=total,
+                        metode="Cash",
+                        status="Sukses",
+                        items=st.session_state.cart
+                    )
+                    if trans_id is not None:
+                        st.session_state.cart = []
+                        st.success(f"Pembayaran cash berhasil! Transaksi #{trans_id} disimpan.")
+                        st.rerun()
+                    else:
+                        st.error("Transaksi gagal, coba lagi.")
+            elif total > 0:
+                st.warning("Jumlah uang yang diterima kurang dari total belanja.")
     else:
         st.info("🛒 Keranjang masih kosong. Silakan pilih produk dan klik 'Tambahkan ke Keranjang'.")
 
