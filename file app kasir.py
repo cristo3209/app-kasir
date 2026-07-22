@@ -47,13 +47,16 @@ def init_db():
             )
         ''')
         
-        # PIN default: 000000
-        default_pin_hash = hashlib.sha256("000000".encode()).hexdigest()
-        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pin_hash', ?)", 
-                 (default_pin_hash,))
-        # Recovery code default
-        c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('recovery_code', ?)", 
-                 ("ADMIN123",))
+        # Pastikan recovery_code ada
+        c.execute("SELECT value FROM settings WHERE key = 'recovery_code'")
+        if not c.fetchone():
+            c.execute("INSERT INTO settings (key, value) VALUES ('recovery_code', 'ADMIN123')")
+        
+        # Pastikan pin_hash ada
+        c.execute("SELECT value FROM settings WHERE key = 'pin_hash'")
+        if not c.fetchone():
+            default_hash = hashlib.sha256("000000".encode()).hexdigest()
+            c.execute("INSERT INTO settings (key, value) VALUES ('pin_hash', ?)", (default_hash,))
         
         conn.commit()
     except Exception as e:
@@ -76,7 +79,7 @@ def update_setting(key, value):
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+        c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         conn.commit()
         conn.close()
         return True
@@ -86,6 +89,8 @@ def update_setting(key, value):
 
 def verify_pin(pin_input):
     stored_hash = get_setting("pin_hash")
+    if not stored_hash:
+        return False
     input_hash = hashlib.sha256(pin_input.encode()).hexdigest()
     return stored_hash == input_hash
 
@@ -135,6 +140,7 @@ def get_transaction_items(trans_id):
     except:
         return pd.DataFrame()
 
+# Inisialisasi
 init_db()
 
 # ------------------------------
@@ -146,8 +152,6 @@ if "cart" not in st.session_state:
     st.session_state.cart = []
 if "show_reset" not in st.session_state:
     st.session_state.show_reset = False
-if "show_change_pin" not in st.session_state:
-    st.session_state.show_change_pin = False
 
 # ------------------------------
 # UI Utama
@@ -228,10 +232,9 @@ with tab1:
 with tab2:
     st.header("📊 Dashboard Owner")
 
-    # ========== MODE LOGIN ==========
     if not st.session_state.owner_authenticated:
         
-        # ---- Reset PIN (jika klik Lupa PIN) ----
+        # Mode Reset PIN
         if st.session_state.show_reset:
             st.subheader("🔄 Reset PIN")
             st.info("Masukkan kode pemulihan untuk mereset PIN ke 000000.")
@@ -246,12 +249,12 @@ with tab2:
                     else:
                         st.error("Gagal mereset PIN.")
                 else:
-                    st.error("Kode pemulihan salah!")
+                    st.error(f"Kode pemulihan salah! Kode yang benar: {stored_recovery}")  # Tampilkan kode (hapus nanti)
             if st.button("⬅️ Kembali ke Login"):
                 st.session_state.show_reset = False
                 st.rerun()
         
-        # ---- Login normal ----
+        # Mode Login
         else:
             st.warning("🔐 Masukkan PIN untuk mengakses dashboard.")
             pin_input = st.text_input("PIN (6 digit)", type="password", max_chars=6)
@@ -269,19 +272,16 @@ with tab2:
                     st.session_state.show_reset = True
                     st.rerun()
 
-    # ========== MODE SUDAH LOGIN ==========
     else:
         st.success("✅ Anda terautentikasi sebagai Owner.")
         
-        # Tombol Logout
         if st.button("🚪 Logout", key="logout_btn"):
             st.session_state.owner_authenticated = False
-            st.session_state.show_change_pin = False
             st.rerun()
         
         st.markdown("---")
         
-        # ---- GANTI PIN (expandable) ----
+        # Menu Ganti PIN/Kode Pemulihan
         with st.expander("⚙️ Ganti PIN / Kode Pemulihan"):
             tab_pin, tab_recovery = st.tabs(["🔑 Ganti PIN", "🔄 Ganti Kode Pemulihan"])
             
@@ -333,7 +333,7 @@ with tab2:
         
         st.markdown("---")
         
-        # ---- DASHBOARD ----
+        # Dashboard
         df = get_all_transactions()
         if df.empty:
             st.info("Belum ada transaksi.")
