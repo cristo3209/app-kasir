@@ -39,7 +39,7 @@ def init_db():
             )
         ''')
         
-        # Tabel pengaturan (untuk menyimpan PIN dan recovery code)
+        # Tabel settings
         c.execute('''
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -47,10 +47,11 @@ def init_db():
             )
         ''')
         
-        # Insert default PIN jika belum ada (default: 000000)
+        # PIN default: 000000
+        default_pin_hash = hashlib.sha256("000000".encode()).hexdigest()
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('pin_hash', ?)", 
-                 (hashlib.sha256("000000".encode()).hexdigest(),))
-        # Insert default recovery code
+                 (default_pin_hash,))
+        # Recovery code default
         c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('recovery_code', ?)", 
                  ("ADMIN123",))
         
@@ -143,10 +144,10 @@ if "owner_authenticated" not in st.session_state:
     st.session_state.owner_authenticated = False
 if "cart" not in st.session_state:
     st.session_state.cart = []
-if "show_pin_change" not in st.session_state:
-    st.session_state.show_pin_change = False
 if "show_reset" not in st.session_state:
     st.session_state.show_reset = False
+if "show_change_pin" not in st.session_state:
+    st.session_state.show_change_pin = False
 
 # ------------------------------
 # UI Utama
@@ -163,10 +164,10 @@ PRODUK = [
     {"nama": "Kopi", "harga": 10000},
 ]
 
-tab1, tab2, tab3 = st.tabs(["🛒 Kasir", "🔐 Dashboard", "⚙️ Pengaturan PIN"])
+tab1, tab2 = st.tabs(["🛒 Kasir (Karyawan)", "🔐 Dashboard (Owner)"])
 
 # ======================
-# TAB KASIR (BEBAS)
+# TAB KASIR
 # ======================
 with tab1:
     st.header("🧑‍🍳 Kasir")
@@ -222,60 +223,117 @@ with tab1:
         st.info("Keranjang kosong.")
 
 # ======================
-# TAB DASHBOARD (DENGAN PIN)
+# TAB DASHBOARD (OWNER)
 # ======================
 with tab2:
     st.header("📊 Dashboard Owner")
 
+    # ========== MODE LOGIN ==========
     if not st.session_state.owner_authenticated:
-        st.warning("🔐 Masukkan PIN untuk mengakses dashboard.")
         
-        pin_input = st.text_input("PIN (6 digit)", type="password", max_chars=6)
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔓 Buka Dashboard", use_container_width=True):
-                if verify_pin(pin_input):
-                    st.session_state.owner_authenticated = True
-                    st.success("Akses diberikan!")
-                    st.rerun()
-                else:
-                    st.error("PIN salah!")
-        with col2:
-            if st.button("❓ Lupa PIN", use_container_width=True):
-                st.session_state.show_reset = True
-                st.rerun()
-        
-        # Form reset PIN dengan kode pemulihan
+        # ---- Reset PIN (jika klik Lupa PIN) ----
         if st.session_state.show_reset:
-            st.markdown("---")
             st.subheader("🔄 Reset PIN")
-            st.info("Masukkan kode pemulihan untuk mereset PIN ke default (000000).")
+            st.info("Masukkan kode pemulihan untuk mereset PIN ke 000000.")
             recovery_input = st.text_input("Kode Pemulihan", type="password")
-            if st.button("✅ Reset PIN"):
+            if st.button("✅ Reset PIN Sekarang"):
                 stored_recovery = get_setting("recovery_code")
                 if recovery_input == stored_recovery:
                     if change_pin("000000"):
-                        st.success("PIN berhasil direset ke 000000. Silakan login dan ganti PIN Anda.")
+                        st.success("✅ PIN berhasil direset ke 000000. Silakan login dengan PIN 000000.")
                         st.session_state.show_reset = False
                         st.rerun()
+                    else:
+                        st.error("Gagal mereset PIN.")
                 else:
                     st.error("Kode pemulihan salah!")
+            if st.button("⬅️ Kembali ke Login"):
+                st.session_state.show_reset = False
+                st.rerun()
+        
+        # ---- Login normal ----
+        else:
+            st.warning("🔐 Masukkan PIN untuk mengakses dashboard.")
+            pin_input = st.text_input("PIN (6 digit)", type="password", max_chars=6)
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔓 Buka Dashboard", use_container_width=True):
+                    if verify_pin(pin_input):
+                        st.session_state.owner_authenticated = True
+                        st.success("Akses diberikan!")
+                        st.rerun()
+                    else:
+                        st.error("PIN salah!")
+            with col2:
+                if st.button("❓ Lupa PIN", use_container_width=True):
+                    st.session_state.show_reset = True
+                    st.rerun()
+
+    # ========== MODE SUDAH LOGIN ==========
     else:
         st.success("✅ Anda terautentikasi sebagai Owner.")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🚪 Logout", use_container_width=True):
-                st.session_state.owner_authenticated = False
-                st.rerun()
-        with col2:
-            if st.button("⚙️ Ganti PIN", use_container_width=True):
-                st.session_state.show_pin_change = True
-                st.rerun()
-
+        # Tombol Logout
+        if st.button("🚪 Logout", key="logout_btn"):
+            st.session_state.owner_authenticated = False
+            st.session_state.show_change_pin = False
+            st.rerun()
+        
         st.markdown("---")
         
-        # Tampilan dashboard
+        # ---- GANTI PIN (expandable) ----
+        with st.expander("⚙️ Ganti PIN / Kode Pemulihan"):
+            tab_pin, tab_recovery = st.tabs(["🔑 Ganti PIN", "🔄 Ganti Kode Pemulihan"])
+            
+            with tab_pin:
+                st.subheader("Ganti PIN")
+                with st.form("change_pin_form"):
+                    old_pin = st.text_input("PIN Lama", type="password", max_chars=6)
+                    new_pin = st.text_input("PIN Baru (6 digit angka)", type="password", max_chars=6)
+                    confirm_pin = st.text_input("Konfirmasi PIN Baru", type="password", max_chars=6)
+                    
+                    if st.form_submit_button("💾 Simpan PIN Baru"):
+                        if not old_pin or not new_pin or not confirm_pin:
+                            st.error("Semua field harus diisi!")
+                        elif not verify_pin(old_pin):
+                            st.error("PIN lama salah!")
+                        elif len(new_pin) != 6 or not new_pin.isdigit():
+                            st.error("PIN baru harus 6 digit angka!")
+                        elif new_pin != confirm_pin:
+                            st.error("PIN baru dan konfirmasi tidak cocok!")
+                        else:
+                            if change_pin(new_pin):
+                                st.success("✅ PIN berhasil diubah! Gunakan PIN baru untuk login selanjutnya.")
+                            else:
+                                st.error("Gagal mengubah PIN.")
+            
+            with tab_recovery:
+                st.subheader("Ganti Kode Pemulihan")
+                st.info("Kode pemulihan digunakan jika Anda lupa PIN. Simpan di tempat aman!")
+                current_code = get_setting("recovery_code")
+                st.text(f"Kode pemulihan saat ini: **{current_code}**")
+                
+                with st.form("change_recovery_form"):
+                    new_recovery = st.text_input("Kode Pemulihan Baru", type="password")
+                    pin_confirm = st.text_input("PIN Anda (untuk konfirmasi)", type="password", max_chars=6)
+                    
+                    if st.form_submit_button("💾 Simpan Kode Baru"):
+                        if not new_recovery or not pin_confirm:
+                            st.error("Semua field harus diisi!")
+                        elif not verify_pin(pin_confirm):
+                            st.error("PIN konfirmasi salah!")
+                        elif len(new_recovery) < 6:
+                            st.error("Kode pemulihan minimal 6 karakter!")
+                        else:
+                            if update_setting("recovery_code", new_recovery):
+                                st.success("✅ Kode pemulihan berhasil diubah!")
+                                st.rerun()
+                            else:
+                                st.error("Gagal mengubah kode pemulihan.")
+        
+        st.markdown("---")
+        
+        # ---- DASHBOARD ----
         df = get_all_transactions()
         if df.empty:
             st.info("Belum ada transaksi.")
@@ -307,55 +365,3 @@ with tab2:
                 if tid_pilih:
                     detail = get_transaction_items(tid_pilih)
                     st.dataframe(detail[["nama", "harga", "qty"]], use_container_width=True)
-
-# ======================
-# TAB PENGATURAN PIN
-# ======================
-with tab3:
-    st.header("⚙️ Pengaturan PIN Owner")
-    
-    if not st.session_state.owner_authenticated:
-        st.warning("🔐 Anda harus login terlebih dahulu di tab Dashboard untuk mengubah PIN.")
-    else:
-        st.success("Anda dapat mengubah PIN atau kode pemulihan di sini.")
-        
-        # Ganti PIN
-        st.subheader("🔑 Ganti PIN")
-        with st.form("change_pin_form"):
-            old_pin = st.text_input("PIN Lama", type="password", max_chars=6)
-            new_pin = st.text_input("PIN Baru (6 digit)", type="password", max_chars=6)
-            confirm_pin = st.text_input("Konfirmasi PIN Baru", type="password", max_chars=6)
-            
-            if st.form_submit_button("💾 Simpan PIN Baru"):
-                if not verify_pin(old_pin):
-                    st.error("PIN lama salah!")
-                elif len(new_pin) != 6 or not new_pin.isdigit():
-                    st.error("PIN baru harus 6 digit angka!")
-                elif new_pin != confirm_pin:
-                    st.error("PIN baru tidak cocok!")
-                else:
-                    if change_pin(new_pin):
-                        st.success("✅ PIN berhasil diubah!")
-                        st.info("Gunakan PIN baru Anda untuk login selanjutnya.")
-                        st.rerun()
-        
-        # Ganti Kode Pemulihan
-        st.markdown("---")
-        st.subheader("🔄 Ganti Kode Pemulihan")
-        st.info("Kode pemulihan digunakan untuk mereset PIN jika lupa. Simpan di tempat aman!")
-        
-        with st.form("change_recovery_form"):
-            current_recovery = get_setting("recovery_code")
-            st.text_input("Kode Pemulihan Saat Ini", value=current_recovery, disabled=True, key="current_recovery_display")
-            new_recovery = st.text_input("Kode Pemulihan Baru", type="password")
-            pin_confirm = st.text_input("PIN Anda (untuk konfirmasi)", type="password", max_chars=6)
-            
-            if st.form_submit_button("💾 Simpan Kode Pemulihan Baru"):
-                if not verify_pin(pin_confirm):
-                    st.error("PIN konfirmasi salah!")
-                elif len(new_recovery) < 6:
-                    st.error("Kode pemulihan minimal 6 karakter!")
-                else:
-                    if update_setting("recovery_code", new_recovery):
-                        st.success("✅ Kode pemulihan berhasil diubah!")
-                        st.rerun()
