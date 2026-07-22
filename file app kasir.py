@@ -6,6 +6,7 @@ from PIL import Image
 import io
 from datetime import datetime
 import sqlite3
+import traceback
 
 # ------------------------------
 # Koneksi & Setup Database
@@ -13,32 +14,37 @@ import sqlite3
 DB_NAME = "kasir.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            total INTEGER NOT NULL,
-            metode TEXT NOT NULL,
-            status TEXT NOT NULL,
-            kartu_akhir TEXT
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS transaction_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transaction_id INTEGER NOT NULL,
-            nama TEXT NOT NULL,
-            harga INTEGER NOT NULL,
-            qty INTEGER NOT NULL,
-            FOREIGN KEY (transaction_id) REFERENCES transactions (id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                total INTEGER NOT NULL,
+                metode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                kartu_akhir TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS transaction_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transaction_id INTEGER NOT NULL,
+                nama TEXT NOT NULL,
+                harga INTEGER NOT NULL,
+                qty INTEGER NOT NULL,
+                FOREIGN KEY (transaction_id) REFERENCES transactions (id)
+            )
+        ''')
+        conn.commit()
+    except Exception as e:
+        st.error(f"Gagal inisialisasi database: {e}\n{traceback.format_exc()}")
+    finally:
+        conn.close()
 
 def insert_transaction(timestamp, total, metode, status, items, kartu_akhir=None):
+    conn = None
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
@@ -53,25 +59,36 @@ def insert_transaction(timestamp, total, metode, status, items, kartu_akhir=None
                 VALUES (?, ?, ?, ?)
             ''', (trans_id, item["nama"], item["harga"], item["qty"]))
         conn.commit()
-        conn.close()
         return trans_id
     except Exception as e:
-        st.error(f"Gagal menyimpan transaksi: {e}")
+        # Tampilkan error lengkap di UI
+        st.error(f"Gagal menyimpan transaksi: {e}\n\n{traceback.format_exc()}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 def get_all_transactions():
-    conn = sqlite3.connect(DB_NAME)
-    query = "SELECT * FROM transactions ORDER BY id DESC"
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        query = "SELECT * FROM transactions ORDER BY id DESC"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Gagal membaca transaksi: {e}")
+        return pd.DataFrame()
 
 def get_transaction_items(trans_id):
-    conn = sqlite3.connect(DB_NAME)
-    query = "SELECT * FROM transaction_items WHERE transaction_id = ?"
-    df = pd.read_sql_query(query, conn, params=(trans_id,))
-    conn.close()
-    return df
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        query = "SELECT * FROM transaction_items WHERE transaction_id = ?"
+        df = pd.read_sql_query(query, conn, params=(trans_id,))
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Gagal membaca item transaksi: {e}")
+        return pd.DataFrame()
 
 # Inisialisasi database
 init_db()
@@ -152,14 +169,13 @@ with tab1:
         st.markdown(f"### Total: **Rp{total:,}**")
 
         st.markdown("---")
-        # TAMBAH OPSI CASH
         metode = st.radio(
             "💳 Metode Pembayaran",
             ["QRIS", "DuitNow QR", "Kartu Kredit", "Cash"],
             key="metode"
         )
 
-        # ========== PEMBAYARAN QR (QRIS / DuitNow QR) ==========
+        # ========== QRIS / DuitNow QR ==========
         if metode in ["QRIS", "DuitNow QR"]:
             st.subheader(f"📱 Bayar dengan {metode}")
             qr_string = f"XENDIT|{metode}|INV-TEMP|Rp{total}"
@@ -177,12 +193,13 @@ with tab1:
                 )
                 if trans_id is not None:
                     st.session_state.cart = []
-                    st.success(f"Pembayaran berhasil! Transaksi #{trans_id} disimpan ke database.")
+                    st.success(f"Pembayaran berhasil! Transaksi #{trans_id} disimpan.")
                     st.rerun()
                 else:
-                    st.error("Transaksi gagal, coba lagi.")
+                    # Error sudah ditampilkan oleh insert_transaction
+                    st.error("Transaksi gagal. Cek pesan error di atas.")
 
-        # ========== PEMBAYARAN KARTU KREDIT ==========
+        # ========== Kartu Kredit ==========
         elif metode == "Kartu Kredit":
             st.subheader("💳 Detail Kartu Kredit")
             with st.form("kartu_form"):
@@ -207,16 +224,13 @@ with tab1:
                             st.session_state.cart = []
                             st.success(f"Pembayaran kartu kredit berhasil! Transaksi #{trans_id} disimpan.")
                             st.rerun()
-                        else:
-                            st.error("Transaksi gagal, coba lagi.")
                     else:
                         st.error("Mohon isi semua data kartu dengan benar (16 digit nomor, 3 digit CVV).")
 
-        # ========== PEMBAYARAN CASH ==========
+        # ========== Cash ==========
         else:  # Cash
             st.subheader("💵 Pembayaran Cash")
             st.write(f"Total yang harus dibayar: **Rp{total:,}**")
-            # Input jumlah uang dari pelanggan
             uang_dibayar = st.number_input("Jumlah uang diterima (Rp)", min_value=0, value=0, step=1000)
             if uang_dibayar >= total and total > 0:
                 kembalian = uang_dibayar - total
@@ -234,8 +248,6 @@ with tab1:
                         st.session_state.cart = []
                         st.success(f"Pembayaran cash berhasil! Transaksi #{trans_id} disimpan.")
                         st.rerun()
-                    else:
-                        st.error("Transaksi gagal, coba lagi.")
             elif total > 0:
                 st.warning("Jumlah uang yang diterima kurang dari total belanja.")
     else:
